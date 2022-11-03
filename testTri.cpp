@@ -295,6 +295,7 @@ int main()
 
     std::cout << "Starting the queries.\n";
     int const n = points.size();
+    Kokkos::View<int *, MemorySpace> indices("indices", n);
     Kokkos::View<int *, MemorySpace> offsets("offsets", n);
     Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
 
