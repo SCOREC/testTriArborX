@@ -104,7 +104,10 @@ public:
       {
         points_host[2 * index(i, j)] = {(i + .252f) * hx, (j + .259f) * hy, 0.f};
         points_host[2 * index(i, j) + 1] = {(i + .75f) * hx, (j + .75f) * hy, 0.f};
-        //printf("%.2f, %.2f\n", points_host[2*index(i,j)][0], points_host[2*index(i,j)][1]);
+        printf("(%.2f, %.2f), (%.2f, %.2f)\n", 
+            points_host[2*index(i,j)][0], points_host[2*index(i,j)][1],
+            points_host[2*index(i,j)+1][0], points_host[2*index(i,j)+1][1]
+            );
       }
     Kokkos::deep_copy(execution_space, points_, points_host);
   }
@@ -127,11 +130,11 @@ public:
   {
     float Lx = 100.0;
     float Ly = 100.0;
-    int nx = 101;
-    int ny = 101;
+    int nx = 2;
+    int ny = 2;
     int n = nx * ny;
-    float hx = Lx / (nx - 1);
-    float hy = Ly / (ny - 1);
+    float hx = Lx / (nx);
+    float hy = Ly / (ny);
 
     auto index = [nx, ny](int i, int j) { return i + j * nx; };
 
@@ -150,6 +153,15 @@ public:
         ArborX::Point br{(i + 1) * hx, j * hy, 0.};
         ArborX::Point tl{i * hx, (j + 1) * hy, 0.};
         ArborX::Point tr{(i + 1) * hx, (j + 1) * hy, 0.};
+
+        printf("1: [(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)], \
+                \n2: [(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)]\n",
+            tl[0], tl[1], tl[2],
+            bl[0], bl[1], bl[2],
+            br[0], br[1], br[2],
+            tl[0], tl[1], tl[2],
+            br[0], br[1], br[2],
+            tr[0], tr[1], tr[2]);
 
         triangles_host[2 * index(i, j)] = {tl, bl, br};
         triangles_host[2 * index(i, j) + 1] = {tl, br, tr};
@@ -174,6 +186,7 @@ public:
           abort();
     }
     Kokkos::deep_copy(execution_space, triangles_, triangles_host);
+    Kokkos::deep_copy(execution_space, mappings_, mappings_host);
   }
 
   // Return the number of triangles.
@@ -276,8 +289,20 @@ public:
     //auto predicate_index = ArborX::getData(predicate);
     const auto coeffs = triangles_.get_mapping(primitive_index).get_coeff(point);
     bool intersects = coeffs[0] >= 0 && coeffs[1] >= 0 && coeffs[2] >= 0;
+    auto triangle = triangles_.get_triangle(primitive_index);
+    printf("(%f, %f), \
+            [(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)], %f, %f, %f\n",
+            point[0], point[1],
+            triangle.a[0], triangle.a[1], triangle.a[2],
+            triangle.b[0], triangle.b[1], triangle.b[2],
+            triangle.c[0], triangle.c[1], triangle.c[2],
+            coeffs[0], coeffs[1], coeffs[2]
+            );
     if(intersects) {
       out(primitive_index);
+    }
+    else {
+      printf("not intersects\n");
     }
   }
 
@@ -339,6 +364,7 @@ int main()
     //Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
 
     ArborX::query(tree, execution_space, points, TriangleIntersectionCallback{triangles}, indices, offsets);
+    //ArborX::query(tree, execution_space, points, indices, offsets);
     //ArborX::query(tree, execution_space, points, indices, offsets);
     std::cout << "Queries done.\n";
     auto indices_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, indices);
