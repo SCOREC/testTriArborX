@@ -218,6 +218,47 @@ struct ArborX::AccessTraits<Triangles<DeviceType>, ArborX::PrimitivesTag>
   }
 };
 
+//// For performing the queries given a Triangles object, we need to define memory
+//// space, how to get the total number of queries, and what the query with index
+//// i should look like. Since we are using self-intersection (which boxes
+//// intersect with the given one), the functions here very much look like the
+//// ones in ArborX::AccessTraits<Boxes<DeviceType>, ArborX::PrimitivesTag>.
+//template <typename DeviceType>
+//struct ArborX::AccessTraits<Triangles<DeviceType>, ArborX::PredicatesTag>
+//{
+//  using memory_space = typename DeviceType::memory_space;
+//  static KOKKOS_FUNCTION int size(Triangles<DeviceType> const &triangles)
+//  {
+//    return triangles.size();
+//  }
+//  static KOKKOS_FUNCTION auto get(Triangles<DeviceType> const &triangles, int i)
+//  {
+//    const auto &triangle = triangles.get_triangle(i);
+//    ArborX::Box box{};
+//    box += triangle.a;
+//    box += triangle.b;
+//    box += triangle.c;
+//    //return intersects(box);
+//    return intersects(box);
+//  }
+//};
+template <typename DeviceType>
+struct ArborX::AccessTraits<Points<DeviceType>, ArborX::PredicatesTag>
+{
+  using memory_space = typename DeviceType::memory_space;
+  static KOKKOS_FUNCTION int size(Points<DeviceType> const &points)
+  {
+    return points.size();
+  }
+  static KOKKOS_FUNCTION auto get(Points<DeviceType> const &points, int i)
+  {
+    const auto& point = points.get_point(i);
+    // TODO attach data as needed for IntersectionCallback
+
+    return intersects(point);
+  }
+};
+
 template <typename DeviceType>
 class TriangleIntersectionCallback
 {
@@ -263,26 +304,26 @@ int main()
 
     constexpr float eps = 1.e-3;
 
-    for (int i = 0; i < triangles.size(); ++i)
-    {
-      const auto &mapping = triangles.get_mapping(i);
-      const auto &triangle = triangles.get_triangle(i);
-      const auto &coeff_a = mapping.get_coeff(triangle.a);
-      if ((std::abs(coeff_a[0] - 1.) > eps) || std::abs(coeff_a[1]) > eps ||
-          std::abs(coeff_a[2]) > eps)
-        std::cout << i << " a: " << coeff_a[0] << ' ' << coeff_a[1] << ' '
-                  << coeff_a[2] << std::endl;
-      const auto &coeff_b = mapping.get_coeff(triangle.b);
-      if ((std::abs(coeff_b[0]) > eps) || std::abs(coeff_b[1] - 1.) > eps ||
-          std::abs(coeff_b[2]) > eps)
-        std::cout << i << " b: " << coeff_b[0] << ' ' << coeff_b[1] << ' '
-                  << coeff_b[2] << std::endl;
-      const auto &coeff_c = mapping.get_coeff(triangle.c);
-      if ((std::abs(coeff_c[0]) > eps) || std::abs(coeff_c[1]) > eps ||
-          std::abs(coeff_c[2] - 1.) > eps)
-        std::cout << i << " c: " << coeff_c[0] << ' ' << coeff_c[1] << ' '
-                  << coeff_c[2] << std::endl;
-    }
+    //for (int i = 0; i < triangles.size(); ++i)
+    //{
+    //  const auto &mapping = triangles.get_mapping(i);
+    //  const auto &triangle = triangles.get_triangle(i);
+    //  const auto &coeff_a = mapping.get_coeff(triangle.a);
+    //  if ((std::abs(coeff_a[0] - 1.) > eps) || std::abs(coeff_a[1]) > eps ||
+    //      std::abs(coeff_a[2]) > eps)
+    //    std::cout << i << " a: " << coeff_a[0] << ' ' << coeff_a[1] << ' '
+    //              << coeff_a[2] << std::endl;
+    //  const auto &coeff_b = mapping.get_coeff(triangle.b);
+    //  if ((std::abs(coeff_b[0]) > eps) || std::abs(coeff_b[1] - 1.) > eps ||
+    //      std::abs(coeff_b[2]) > eps)
+    //    std::cout << i << " b: " << coeff_b[0] << ' ' << coeff_b[1] << ' '
+    //              << coeff_b[2] << std::endl;
+    //  const auto &coeff_c = mapping.get_coeff(triangle.c);
+    //  if ((std::abs(coeff_c[0]) > eps) || std::abs(coeff_c[1]) > eps ||
+    //      std::abs(coeff_c[2] - 1.) > eps)
+    //    std::cout << i << " c: " << coeff_c[0] << ' ' << coeff_c[1] << ' '
+    //              << coeff_c[2] << std::endl;
+    //}
     std::cout << "Triangles set up.\n";
 
     std::cout << "Creating BVH tree.\n";
@@ -299,9 +340,11 @@ int main()
     Kokkos::View<int *, MemorySpace> offsets("offsets", n);
     Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
 
-    ArborX::query(tree, execution_space, triangles, indices, offsets);
+    //ArborX::query(tree, execution_space, points, TriangleIntersectionCallback{triangles}, indices, offsets);
+    ArborX::query(tree, execution_space, points, indices, offsets);
     std::cout << "Queries done.\n";
 
+    /*
     std::cout << "Starting checking results.\n";
     auto offsets_host =
         Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, offsets);
@@ -315,7 +358,7 @@ int main()
         std::cout << offsets_host(i) << " should be " << i << std::endl;
       }
       const auto &c = coeffs_host(i);
-      const auto &t = triangles.get_triangle(offsets_host(i));
+      const auto &t = triangles_host.get_triangle(offsets_host(i));
       const auto &p_h = points.get_point(i);
       ArborX::Point p = {{c[0] * t.a[0] + c[1] * t.b[0] + c[2] * t.c[0]},
                          {c[0] * t.a[1] + c[1] * t.b[1] + c[2] * t.c[1]},
@@ -328,6 +371,7 @@ int main()
     }
 
     std::cout << "Checking results successful.\n";
+    */
   }
 
   Kokkos::finalize();
