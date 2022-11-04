@@ -39,6 +39,7 @@ struct Mapping
   ArborX::Point beta;
   ArborX::Point p0;
 
+  KOKKOS_FUNCTION
   ArborX::Point get_coeff(ArborX::Point p) const
   {
     float alpha_coeff = alpha[0] * (p[0] - p0[0]) + alpha[1] * (p[1] - p0[1]) +
@@ -87,24 +88,23 @@ public:
   {
     float Lx = 100.0;
     float Ly = 100.0;
-    int nx = 101;
-    int ny = 101;
+    int nx = 2;
+    int ny = 2;
     int n = nx * ny;
     float hx = Lx / (nx - 1);
     float hy = Ly / (ny - 1);
 
     auto index = [nx, ny](int i, int j) { return i + j * nx; };
 
-    points_ = Kokkos::View<ArborX::Point *, typename DeviceType::memory_space>(
-        Kokkos::view_alloc(Kokkos::WithoutInitializing, "points"), 2 * n);
+    points_ = Kokkos::View<ArborX::Point *, typename DeviceType::memory_space>("points", 2 * n);
     auto points_host = Kokkos::create_mirror_view(points_);
 
     for (int i = 0; i < nx; ++i)
       for (int j = 0; j < ny; ++j)
       {
-        points_host[2 * index(i, j)] = {(i + .25f) * hx, (j + .25f) * hy, 0.f};
-        points_host[2 * index(i, j) + 1] = {(i + .75f) * hx, (j + .75f) * hy,
-                                            0.f};
+        points_host[2 * index(i, j)] = {(i + .252f) * hx, (j + .259f) * hy, 0.f};
+        points_host[2 * index(i, j) + 1] = {(i + .75f) * hx, (j + .75f) * hy, 0.f};
+        //printf("%.2f, %.2f\n", points_host[2*index(i,j)][0], points_host[2*index(i,j)][1]);
       }
     Kokkos::deep_copy(execution_space, points_, points_host);
   }
@@ -253,11 +253,10 @@ struct ArborX::AccessTraits<Points<DeviceType>, ArborX::PredicatesTag>
   static KOKKOS_FUNCTION auto get(Points<DeviceType> const &points, int i)
   {
     const auto& point = points.get_point(i);
-    // TODO attach data as needed for IntersectionCallback
-
     return intersects(point);
   }
 };
+
 
 template <typename DeviceType>
 class TriangleIntersectionCallback
@@ -268,19 +267,17 @@ public:
   {
   }
 
-  template <typename Query>
-  KOKKOS_FUNCTION void operator()(Query const &query, int triangle_index) const
+  template <typename Predicate, typename OutputFunctor>
+  KOKKOS_FUNCTION void operator()(Predicate const &predicate, int primitive_index,
+                                  OutputFunctor const &out) const
   {
-    const ArborX::Point &point = getGeometry(getPredicate(query));
-    auto const &attachment = ArborX::getData(query);
 
-    const auto coeffs = triangles_.get_mapping(triangle_index).get_coeff(point);
+    const ArborX::Point &point = getGeometry(predicate);
+    //auto predicate_index = ArborX::getData(predicate);
+    const auto coeffs = triangles_.get_mapping(primitive_index).get_coeff(point);
     bool intersects = coeffs[0] >= 0 && coeffs[1] >= 0 && coeffs[2] >= 0;
-
-    if (intersects)
-    {
-      attachment.triangle_index = triangle_index;
-      attachment.coeffs = coeffs;
+    if(intersects) {
+      out(primitive_index);
     }
   }
 
@@ -336,13 +333,26 @@ int main()
 
     std::cout << "Starting the queries.\n";
     int const n = points.size();
-    Kokkos::View<int *, MemorySpace> indices("indices", n);
-    Kokkos::View<int *, MemorySpace> offsets("offsets", n);
-    Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
+    printf("point size %d, triangle size %d\n", points.size(), triangles.size());
+    Kokkos::View<int *, MemorySpace> indices("indices", 0);
+    Kokkos::View<int *, MemorySpace> offsets("offsets", 0);
+    //Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
 
-    //ArborX::query(tree, execution_space, points, TriangleIntersectionCallback{triangles}, indices, offsets);
-    ArborX::query(tree, execution_space, points, indices, offsets);
+    ArborX::query(tree, execution_space, points, TriangleIntersectionCallback{triangles}, indices, offsets);
+    //ArborX::query(tree, execution_space, points, indices, offsets);
     std::cout << "Queries done.\n";
+    auto indices_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, indices);
+    auto offsets_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, offsets);
+
+    printf("indices %d\n", indices_h.extent(0));
+    for(int i=0; i<indices_h.extent(0); ++i) {
+      printf("%d ", indices_h(i));
+    }
+    printf("\noffsets %d\n", offsets_h.extent(0));
+    for(int i=0; i<offsets_h.extent(0); ++i) {
+      printf("%d ", offsets_h(i));
+    }
+    printf("\n");
 
     /*
     std::cout << "Starting checking results.\n";
@@ -375,4 +385,6 @@ int main()
   }
 
   Kokkos::finalize();
+
+
 }
