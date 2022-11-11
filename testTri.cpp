@@ -12,19 +12,26 @@
 #include <ArborX.hpp>
 
 #include <Kokkos_Core.hpp>
+#include <Kokkos_StdAlgorithms.hpp>
 
-// Perform intersection queries using 2D triangles on a regular mesh as
-// primitives and intersection with points as queries. One point per triangle.
-// __________
-// |\x|\x|\x|
-// |x\|x\|x\|
-// __________
-// |\x|\x|\x|
-// |x\|x\|x\|
-// __________
-// |\x|\x|\x|
-// |x\|x\|x\|
-// __________
+// In ArborX terminology:
+// primative = triangle
+// predicate = point
+// Perform intersection queries using a structured mesh of 2D triangles
+// and intersect with points (marked with 'x') as queries.
+// -------
+// |\ |\x|
+// | \| \|
+// -------
+// |\ |\ |
+// |x\| \|
+// -------
+//
+// Eight points are created.  The first two points are within the domain,
+// in triangles 0 and 7 respectively. The remaining points are outside the domain.
+// This is reflected in the 'indices' and 'offsets' arrays that are checked for
+// correctness in main(...).
+//
 
 struct Triangle
 {
@@ -39,6 +46,7 @@ struct Mapping
   ArborX::Point beta;
   ArborX::Point p0;
 
+  KOKKOS_FUNCTION
   ArborX::Point get_coeff(ArborX::Point p) const
   {
     float alpha_coeff = alpha[0] * (p[0] - p0[0]) + alpha[1] * (p[1] - p0[1]) +
@@ -87,24 +95,22 @@ public:
   {
     float Lx = 100.0;
     float Ly = 100.0;
-    int nx = 101;
-    int ny = 101;
+    int nx = 2;
+    int ny = 2;
     int n = nx * ny;
     float hx = Lx / (nx - 1);
     float hy = Ly / (ny - 1);
 
     auto index = [nx, ny](int i, int j) { return i + j * nx; };
 
-    points_ = Kokkos::View<ArborX::Point *, typename DeviceType::memory_space>(
-        Kokkos::view_alloc(Kokkos::WithoutInitializing, "points"), 2 * n);
+    points_ = Kokkos::View<ArborX::Point *, typename DeviceType::memory_space>("points", 2 * n);
     auto points_host = Kokkos::create_mirror_view(points_);
 
     for (int i = 0; i < nx; ++i)
       for (int j = 0; j < ny; ++j)
       {
-        points_host[2 * index(i, j)] = {(i + .25f) * hx, (j + .25f) * hy, 0.f};
-        points_host[2 * index(i, j) + 1] = {(i + .75f) * hx, (j + .75f) * hy,
-                                            0.f};
+        points_host[2 * index(i, j)] = {(i + .252f) * hx, (j + .259f) * hy, 0.f};
+        points_host[2 * index(i, j) + 1] = {(i + .751f) * hx, (j + .751f) * hy, 0.f};
       }
     Kokkos::deep_copy(execution_space, points_, points_host);
   }
@@ -127,11 +133,11 @@ public:
   {
     float Lx = 100.0;
     float Ly = 100.0;
-    int nx = 101;
-    int ny = 101;
-    int n = nx * ny;
-    float hx = Lx / (nx - 1);
-    float hy = Ly / (ny - 1);
+    int nx = 2;
+    int ny = 2;
+    int n = nx * ny; //number of squares, each is divided into two triangles
+    float hx = Lx / (nx);
+    float hy = Ly / (ny);
 
     auto index = [nx, ny](int i, int j) { return i + j * nx; };
 
@@ -150,7 +156,6 @@ public:
         ArborX::Point br{(i + 1) * hx, j * hy, 0.};
         ArborX::Point tl{i * hx, (j + 1) * hy, 0.};
         ArborX::Point tr{(i + 1) * hx, (j + 1) * hy, 0.};
-
         triangles_host[2 * index(i, j)] = {tl, bl, br};
         triangles_host[2 * index(i, j) + 1] = {tl, br, tr};
       }
@@ -174,6 +179,7 @@ public:
           abort();
     }
     Kokkos::deep_copy(execution_space, triangles_, triangles_host);
+    Kokkos::deep_copy(execution_space, mappings_, mappings_host);
   }
 
   // Return the number of triangles.
@@ -219,6 +225,22 @@ struct ArborX::AccessTraits<Triangles<DeviceType>, ArborX::PrimitivesTag>
 };
 
 template <typename DeviceType>
+struct ArborX::AccessTraits<Points<DeviceType>, ArborX::PredicatesTag>
+{
+  using memory_space = typename DeviceType::memory_space;
+  static KOKKOS_FUNCTION int size(Points<DeviceType> const &points)
+  {
+    return points.size();
+  }
+  static KOKKOS_FUNCTION auto get(Points<DeviceType> const &points, int i)
+  {
+    const auto& point = points.get_point(i);
+    return intersects(point);
+  }
+};
+
+
+template <typename DeviceType>
 class TriangleIntersectionCallback
 {
 public:
@@ -227,19 +249,17 @@ public:
   {
   }
 
-  template <typename Query>
-  KOKKOS_FUNCTION void operator()(Query const &query, int triangle_index) const
+  template <typename Predicate, typename OutputFunctor>
+  KOKKOS_FUNCTION void operator()(Predicate const &predicate, int primitive_index,
+                                  OutputFunctor const &out) const
   {
-    const ArborX::Point &point = getGeometry(getPredicate(query));
-    auto const &attachment = ArborX::getData(query);
 
-    const auto coeffs = triangles_.get_mapping(triangle_index).get_coeff(point);
+    const ArborX::Point &point = getGeometry(predicate);
+    const auto coeffs = triangles_.get_mapping(primitive_index).get_coeff(point);
     bool intersects = coeffs[0] >= 0 && coeffs[1] >= 0 && coeffs[2] >= 0;
-
-    if (intersects)
-    {
-      attachment.triangle_index = triangle_index;
-      attachment.coeffs = coeffs;
+    auto triangle = triangles_.get_triangle(primitive_index);
+    if(intersects) {
+      out(primitive_index);
     }
   }
 
@@ -247,8 +267,6 @@ private:
   Triangles<DeviceType> triangles_;
 };
 
-// Now that we have encapsulated the objects and queries to be used within the
-// Triangles class, we can continue with performing the actual search.
 int main()
 {
   Kokkos::initialize();
@@ -260,29 +278,6 @@ int main()
 
     std::cout << "Create grid with triangles.\n";
     Triangles<DeviceType> triangles(execution_space);
-
-    constexpr float eps = 1.e-3;
-
-    for (int i = 0; i < triangles.size(); ++i)
-    {
-      const auto &mapping = triangles.get_mapping(i);
-      const auto &triangle = triangles.get_triangle(i);
-      const auto &coeff_a = mapping.get_coeff(triangle.a);
-      if ((std::abs(coeff_a[0] - 1.) > eps) || std::abs(coeff_a[1]) > eps ||
-          std::abs(coeff_a[2]) > eps)
-        std::cout << i << " a: " << coeff_a[0] << ' ' << coeff_a[1] << ' '
-                  << coeff_a[2] << std::endl;
-      const auto &coeff_b = mapping.get_coeff(triangle.b);
-      if ((std::abs(coeff_b[0]) > eps) || std::abs(coeff_b[1] - 1.) > eps ||
-          std::abs(coeff_b[2]) > eps)
-        std::cout << i << " b: " << coeff_b[0] << ' ' << coeff_b[1] << ' '
-                  << coeff_b[2] << std::endl;
-      const auto &coeff_c = mapping.get_coeff(triangle.c);
-      if ((std::abs(coeff_c[0]) > eps) || std::abs(coeff_c[1]) > eps ||
-          std::abs(coeff_c[2] - 1.) > eps)
-        std::cout << i << " c: " << coeff_c[0] << ' ' << coeff_c[1] << ' '
-                  << coeff_c[2] << std::endl;
-    }
     std::cout << "Triangles set up.\n";
 
     std::cout << "Creating BVH tree.\n";
@@ -295,40 +290,34 @@ int main()
 
     std::cout << "Starting the queries.\n";
     int const n = points.size();
-    Kokkos::View<int *, MemorySpace> indices("indices", n);
-    Kokkos::View<int *, MemorySpace> offsets("offsets", n);
-    Kokkos::View<ArborX::Point *, MemorySpace> coefficients("coefficients", n);
+    std::cout << "number of points " << points.size()
+              << " number of triangles " << triangles.size() << "\n";
+    //'indices' and 'offsets' define a CSR indicating which
+    //triangle (index[i]) each point exists within.
+    //indices contains triangle ids.
+    //In the indices array, the triangles associated with point i
+    //are defined by the range [offsets[i]:offsets[i+1]).
+    //If a point is on an edge or vertex it will be listed
+    //as existing within all the triangles bound by the edge
+    //or vertex.
+    Kokkos::View<int *, MemorySpace> indices("indices", 0);
+    Kokkos::View<int *, MemorySpace> offsets("offsets", 0);
 
-    ArborX::query(tree, execution_space, triangles, indices, offsets);
+    ArborX::query(tree, execution_space, points,
+        TriangleIntersectionCallback{triangles}, indices, offsets);
     std::cout << "Queries done.\n";
-
-    std::cout << "Starting checking results.\n";
-    auto offsets_host =
-        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, offsets);
-    auto coeffs_host =
-        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, coefficients);
-
-    for (int i = 0; i < n; ++i)
-    {
-      if (offsets_host(i) != i)
-      {
-        std::cout << offsets_host(i) << " should be " << i << std::endl;
-      }
-      const auto &c = coeffs_host(i);
-      const auto &t = triangles.get_triangle(offsets_host(i));
-      const auto &p_h = points.get_point(i);
-      ArborX::Point p = {{c[0] * t.a[0] + c[1] * t.b[0] + c[2] * t.c[0]},
-                         {c[0] * t.a[1] + c[1] * t.b[1] + c[2] * t.c[1]},
-                         {c[0] * t.a[2] + c[1] * t.b[2] + c[2] * t.c[2]}};
-      if ((std::abs(p[0] - p_h[0]) > eps) || std::abs(p[1] - p_h[1]) > eps ||
-          std::abs(p[2] - p_h[2]) > eps)
-      {
-        std::cout << "coeffs for point " << i << " are wrong!\n";
-      }
-    }
-
-    std::cout << "Checking results successful.\n";
+    auto indices_gold = std::vector{1,7};
+    auto offsets_gold = std::vector{0, 1, 2, 2, 2, 2, 2, 2, 2};
+    using KkIntViewUnmanaged = Kokkos::View<int *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+    KkIntViewUnmanaged indices_gold_h(indices_gold.data(), indices_gold.size());
+    KkIntViewUnmanaged offsets_gold_h(offsets_gold.data(), offsets_gold.size());
+    Kokkos::View<int*, MemorySpace> indices_gold_d("indices_gold_d",indices_gold.size());
+    Kokkos::View<int*, MemorySpace> offsets_gold_d("offsets_gold_d", offsets_gold.size());
+    Kokkos::deep_copy(indices_gold_d, indices_gold_h);
+    Kokkos::deep_copy(offsets_gold_d, offsets_gold_h);
+    namespace KE = Kokkos::Experimental;
+    assert(KE::equal(ExecutionSpace{},indices,indices_gold_d));
+    assert(KE::equal(ExecutionSpace{},offsets,offsets_gold_d));
   }
-
   Kokkos::finalize();
 }
