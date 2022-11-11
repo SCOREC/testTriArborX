@@ -14,6 +14,11 @@
 #include <Kokkos_Core.hpp>
 #include <Kokkos_StdAlgorithms.hpp>
 
+#include <Omega_h_file.hpp>
+#include <Omega_h_library.hpp>
+#include <Omega_h_comm.hpp>
+#include <Omega_h_mesh.hpp>
+
 // In ArborX terminology:
 // primative = triangle
 // predicate = point
@@ -129,8 +134,9 @@ class Triangles
 public:
   // Create non-intersecting triangles on a 3D cartesian grid
   // used both for queries and predicates.
-  Triangles(typename DeviceType::execution_space const &execution_space)
+  Triangles(typename DeviceType::execution_space const &execution_space, Omega_h::Mesh& mesh)
   {
+    std::cout << "num omegah triangles " << mesh.nelems() << "\n";
     float Lx = 100.0;
     float Ly = 100.0;
     int nx = 2;
@@ -149,6 +155,8 @@ public:
         Kokkos::view_alloc(Kokkos::WithoutInitializing, "mappings"), 2 * n);
     auto mappings_host = Kokkos::create_mirror_view(mappings_);
 
+    //TODO Fill the 'triangles_host' array with vertex coordinates from the Omega_h
+    // mesh triangles {
     for (int i = 0; i < nx; ++i)
       for (int j = 0; j < ny; ++j)
       {
@@ -159,6 +167,7 @@ public:
         triangles_host[2 * index(i, j)] = {tl, bl, br};
         triangles_host[2 * index(i, j) + 1] = {tl, br, tr};
       }
+    // }
 
     for (int k = 0; k < 2 * n; ++k)
     {
@@ -267,17 +276,25 @@ private:
   Triangles<DeviceType> triangles_;
 };
 
-int main()
+int main(int argc, char** argv)
 {
   Kokkos::initialize();
+  auto lib = Omega_h::Library{};
+  auto world = lib.world();
+  if( argc != 2) {
+    std::cerr << "Usage: " << argv[0] << " /path/to/omega_h/mesh\n";
+    exit(EXIT_FAILURE);
+  }
   {
+    Omega_h::Mesh mesh(&lib);
+    Omega_h::binary::read(argv[1], lib.world(), &mesh);
     using ExecutionSpace = Kokkos::DefaultExecutionSpace;
     using MemorySpace = typename ExecutionSpace::memory_space;
     using DeviceType = Kokkos::Device<ExecutionSpace, MemorySpace>;
     ExecutionSpace execution_space;
 
     std::cout << "Create grid with triangles.\n";
-    Triangles<DeviceType> triangles(execution_space);
+    Triangles<DeviceType> triangles(execution_space,mesh);
     std::cout << "Triangles set up.\n";
 
     std::cout << "Creating BVH tree.\n";
@@ -306,6 +323,8 @@ int main()
     ArborX::query(tree, execution_space, points,
         TriangleIntersectionCallback{triangles}, indices, offsets);
     std::cout << "Queries done.\n";
+
+    //TODO remove these checks
     auto indices_gold = std::vector{1,7};
     auto offsets_gold = std::vector{0, 1, 2, 2, 2, 2, 2, 2, 2};
     using KkIntViewUnmanaged = Kokkos::View<int *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
